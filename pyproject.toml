@@ -21,7 +21,7 @@ Homepage = "https://github.com/mqnc/autosnip"
 Issues = "https://github.com/mqnc/autosnip/issues"
 
 [project.scripts]
-thing = "autosnip:main"
+autosnip = "autosnip:main"
 
 [build-system]
 requires = ["hatchling"]
