@@ -1,0 +1,31 @@
+[project]
+name = "autosnip"
+version = "0.1.0"
+authors = [{ name = "Mirko Kunze" }]
+description = "automatically clean up voice recordings"
+readme = "README.md"
+requires-python = ">=3.0"
+classifiers = [
+	"Programming Language :: Python :: 3",
+	"License :: OSI Approved :: MIT License",
+	"Operating System :: OS Independent",
+]
+dependencies = [
+    "vosk>=0.3.45",
+    "soundfile>=0.13.1",
+    "audioop_lts>=0.2.2; python_version >= '3.13'"
+]
+
+[project.urls]
+Homepage = "https://github.com/mqnc/autosnip"
+Issues = "https://github.com/mqnc/autosnip/issues"
+
+[project.scripts]
+thing = "autosnip:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["autosnip/**"]
