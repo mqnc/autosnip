@@ -511,8 +511,7 @@ def stitch_audio(recording_path, intervals, output_path, crossfade):
                 prev_segment = segment
 
 
-if __name__ == "__main__":
-
+def main():
     cfg = setup()
 
     script, transcript = load_or_generate_transcript(cfg)
@@ -539,3 +538,7 @@ if __name__ == "__main__":
     stitch_audio(cfg.rec, intervals, cfg.out, cfg.fade)
 
     v_print(f"\ncleaned recording written to {cfg.out}")
+
+
+if __name__ == "__main__":
+    main()
