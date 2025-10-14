@@ -13,13 +13,11 @@ from types import SimpleNamespace
 from typing import Dict, List, Tuple
 
 import soundfile as sf
+import numpy as np
 from vosk import KaldiRecognizer, Model
 
 if sys.version_info < (3, 13):
     import audioop
-
-    if sys.version_info >= (3, 11):
-        print("Don't worry though, autosnip will then use audioop_lts instead.")
 else:
     import audioop_lts as audioop
 
@@ -196,8 +194,17 @@ def load_or_generate_transcript(cfg):
         if os.path.exists(cache_16k):
             print(f"using cached down-sampled audio {cache_16k}")
         else:
-            data, samplerate = sf.read(cfg.rec)
-            sf.write(cache_16k, data, 16000)
+            data, sr_in = sf.read(cfg.rec)
+            sr_out = 16000
+            ratio = sr_out / sr_in
+            x_old = np.arange(len(data))
+            x_new = np.linspace(0, len(data) - 1, int(len(data) * ratio))
+            data_resampled = np.interp(x_new, x_old, data)
+            sf.write(cache_16k, data_resampled, sr_out)
+
+
+            # data, samplerate = sf.read(cfg.rec)
+            # sf.write(cache_16k, data, 16000)
             print(f"down-sampled audio written to {cache_16k}")
 
         model = Model(cfg.model_path)
@@ -214,7 +221,7 @@ def load_or_generate_transcript(cfg):
     return script.split(" "), transcript
 
 
-def split_into_segments(transcript, cue):
+def split_into_segments(transcript, cue, min_segment_length):
     segments = []
     current_seg = []
     for w in transcript:
@@ -235,6 +242,7 @@ def split_into_segments(transcript, cue):
             print(
                 ansi_fib_color(i), " ".join([w["word"] for w in s]), ANSI_RESET, sep=""
             )
+        
 
     return segments
 
@@ -414,6 +422,13 @@ def select_clips(script, segments, script_corresps):
     while True:
 
         i_seg, i_first_part = script_corresps[i_script_word]
+        while i_first_part is None:
+            i_script_word += 1
+            if i_script_word >= len(script):
+                break
+            i_seg, i_first_part = script_corresps[i_script_word]
+        if i_script_word >= len(script):
+            break
 
         if i_seg == None:
             i_first_script_word = i_script_word
@@ -430,13 +445,17 @@ def select_clips(script, segments, script_corresps):
         else:
             segment = segments[i_seg]
             clip_start_time = segment[i_first_part]["start"]
+            i_last_part = i_first_part
+
             while (
                 i_script_word + 1 < len(script_corresps)
                 and script_corresps[i_script_word + 1][0] == i_seg
             ):
                 i_script_word += 1
+                _, test = script_corresps[i_script_word]
+                if test is not None:
+                    i_last_part = test
 
-            _, i_last_part = script_corresps[i_script_word]
             if i_last_part + 1 < len(segment):
                 clip_end_time = segments[i_seg][i_last_part + 1]["start"]
             else:
