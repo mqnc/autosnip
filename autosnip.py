@@ -47,12 +47,14 @@ ANSI_YELLOW = "\033[93m"
 ANSI_BLUE = "\033[94m"
 ANSI_RESET = "\033[0m"
 ANSI_HIGHLIGHT = "\033[45m"
+ANSI_DIM = "\033[90m"
 
 
 def ansi_color(r: int, g: int, b: int) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 
 
+@cache
 def ansi_fib_color(i) -> str:
     # generate visually distinct colors by index
     phi = (1 + 5**0.5) / 2
@@ -74,8 +76,11 @@ def setup():
     parser.add_argument("-o", "--out", default="recording_cleaned.wav", help="output WAV file name")
     parser.add_argument("-m", "--model", default="vosk-model-*", help="Vosk model directory")
     parser.add_argument("-c", "--cue", default="correction", help="cue word to start over at an earlier point in the script")
+    parser.add_argument("-w", "--words", type=int, default="1", help="minimum number of words under which a segment is discarded")
+    parser.add_argument("-x", "--exclude", nargs='*', type=int, help="manually exclude these segments (by index)")
     parser.add_argument("-f", "--fade", type=float, default=0.01, help="crossfade duration in seconds")
     parser.add_argument("-C", "--cache", default=tempfile.gettempdir(), help="cache folder for the down-sampled audio and the transcript")
+    parser.add_argument("-W", "--wavs", help="folder to output wav snippets to make later manual corrections easier")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose output")
     args = parser.parse_args()
     # fmt: on
@@ -131,8 +136,11 @@ def setup():
         out=args.out,
         model_path=model_path,
         cue=cue,
+        segment_min_words=args.words,
+        manually_excluded_segments=[] if args.exclude is None else args.exclude,
         fade=args.fade,
         cache=args.cache,
+        wavdir=args.wavs,
     )
 
 
@@ -189,6 +197,7 @@ def load_or_generate_transcript(cfg):
         print(f"using cached transcript {transcript_cache}")
         with open(transcript_cache, "r") as f:
             transcript = json.load(f)
+        print(" ".join([ts["word"] for ts in transcript]))
     else:
         cache_16k = os.path.join(cfg.cache, f"{audio_checksum}.16k.wav")
         if os.path.exists(cache_16k):
@@ -201,7 +210,6 @@ def load_or_generate_transcript(cfg):
             x_new = np.linspace(0, len(data) - 1, int(len(data) * ratio))
             data_resampled = np.interp(x_new, x_old, data)
             sf.write(cache_16k, data_resampled, sr_out)
-
 
             # data, samplerate = sf.read(cfg.rec)
             # sf.write(cache_16k, data, 16000)
@@ -221,11 +229,14 @@ def load_or_generate_transcript(cfg):
     return script.split(" "), transcript
 
 
-def split_into_segments(transcript, cue, min_segment_length):
+def split_into_segments(transcript, cue, segment_min_words, manually_excluded_segments):
     segments = []
     current_seg = []
+    i = 0
     for w in transcript:
+        w["seg"] = i
         if w["word"] == cue:
+            i += 1
             if current_seg:
                 segments.append(current_seg)
                 current_seg = []
@@ -239,10 +250,13 @@ def split_into_segments(transcript, cue, min_segment_length):
             f"\n{ANSI_BOLD}contiguous segments (separated by cue word '{cue}'):{ANSI_RESET}\n"
         )
         for i, s in enumerate(segments):
+            if len(s) >= segment_min_words and i not in manually_excluded_segments:
+                color = ansi_fib_color(i)
+            else:
+                color = ANSI_HIGHLIGHT
             print(
-                ansi_fib_color(i), " ".join([w["word"] for w in s]), ANSI_RESET, sep=""
+                color, f"({i}) ", " ".join([w["word"] for w in s]), ANSI_RESET, sep=""
             )
-        
 
     return segments
 
@@ -340,7 +354,9 @@ def levenshtein_word_sequences(
     return first, last, correspondences, edits
 
 
-def show_difference(s1: List[str], s2: List[str], edit_sequence: str, color):
+def show_difference(
+    s1: List[str], s2: List[dict], edit_sequence: str, intro_outro=True
+):
     if not VERBOSE:
         return
     i, j = 0, 0
@@ -348,7 +364,9 @@ def show_difference(s1: List[str], s2: List[str], edit_sequence: str, color):
     script_line, script_line_len = "", 0
     voice_line, voice_line_len = "", 0
 
-    def append(script_word, voice_word):
+    def append(
+        script_word, voice_word, script_color="", voice_color="", highlight_diff=True
+    ):
         nonlocal script_line, script_line_len, voice_line, voice_line_len
         length = 1 + max(len(script_word), len(voice_word))
         if script_line_len + length > max_len:
@@ -356,11 +374,13 @@ def show_difference(s1: List[str], s2: List[str], edit_sequence: str, color):
             print(voice_line)
             script_line, script_line_len = "", 0
             voice_line, voice_line_len = "", 0
-        if script_word == voice_word:
-            voice_line += color
-        else:
+        if highlight_diff and script_word != voice_word:
             script_line += ANSI_HIGHLIGHT
             voice_line += ANSI_HIGHLIGHT
+        else:
+            script_line += script_color
+            voice_line += voice_color
+
         script_line += (
             script_word + " " * (length - len(script_word) - 1) + ANSI_RESET + " "
         )
@@ -371,10 +391,23 @@ def show_difference(s1: List[str], s2: List[str], edit_sequence: str, color):
         voice_line_len += length
 
     started = False
+    i_seg_before = None
     for op in edit_sequence.rstrip("d"):
         if op == "s":
+            if not started and intro_outro:
+                for i_ in range(max(i - 3, 0), i):
+                    append(s1[i_], "", script_color=ANSI_DIM, highlight_diff=False)
             started = True
-            append(s1[i], s2[j])
+            i_seg = s2[j]["seg"]
+            if i_seg_before != i_seg:
+                i_seg_before = i_seg
+                append(
+                    "",
+                    f"({i_seg})",
+                    voice_color=ansi_fib_color(i_seg),
+                    highlight_diff=False,
+                )
+            append(s1[i], s2[j]["word"], voice_color=ansi_fib_color(i_seg))
             i += 1
             j += 1
         elif op == "d":
@@ -382,25 +415,42 @@ def show_difference(s1: List[str], s2: List[str], edit_sequence: str, color):
                 append(s1[i], "")
             i += 1
         elif op == "i":
+            if not started and intro_outro:
+                for i_ in range(max(i - 3, 0), i):
+                    append(s1[i_], "", highlight_diff=False)
             started = True
-            append("", s2[j])
+            i_seg = s2[j]["seg"]
+            if i_seg_before != i_seg:
+                i_seg_before = i_seg
+                append(
+                    "",
+                    f"({i_seg})",
+                    voice_color=ansi_fib_color(i_seg),
+                    highlight_diff=False,
+                )
+            append("", s2[j]["word"], voice_color=ansi_fib_color(s2[j]["seg"]))
             j += 1
+
+    for i_ in range(i, min(i + 3, len(s1))):
+        append(s1[i_], "", script_color=ANSI_DIM, highlight_diff=False)
 
     print(script_line)
     print(voice_line)
     print()
 
 
-def find_correspondences(script, segments):
+def find_correspondences(script, segments, discarded_segments):
     # for each word in the script, find the corresponding segment and word index
 
     script_corresps = [(None, None)] * len(script)
 
     v_print(f"\n{ANSI_BOLD}correspondences:{ANSI_RESET}\n")
 
-    for i, s in enumerate(segments):
-        first, last, seg_corresps, edits = levenshtein_word_sequences(script, s)
-        show_difference(script, [w["word"] for w in s], edits, ansi_fib_color(i))
+    for i, segment in enumerate(segments):
+        if i in discarded_segments:
+            continue
+        first, last, seg_corresps, edits = levenshtein_word_sequences(script, segment)
+        show_difference(script, segment, edits)
 
         # overwrite previous script correspondences in case of overlap
         for k in range(first, last + 1):
@@ -412,25 +462,19 @@ def find_correspondences(script, segments):
 def select_clips(script, segments, script_corresps):
     # find contiguous chunks that correspond to the same segment
 
-    v_print(
-        f"{ANSI_BOLD}final composition of selected clips, missing script parts highlighted:{ANSI_RESET}\n"
-    )
+    # v_print(
+    #     f"{ANSI_BOLD}final composition of selected clips, missing script parts highlighted:{ANSI_RESET}\n"
+    # )
 
     intervals = []
+    composed_script = []
 
     i_script_word = 0
     while True:
 
         i_seg, i_first_part = script_corresps[i_script_word]
-        while i_first_part is None:
-            i_script_word += 1
-            if i_script_word >= len(script):
-                break
-            i_seg, i_first_part = script_corresps[i_script_word]
-        if i_script_word >= len(script):
-            break
 
-        if i_seg == None:
+        if i_seg == None or i_first_part is None:
             i_first_script_word = i_script_word
             while (
                 i_script_word + 1 < len(script_corresps)
@@ -438,10 +482,10 @@ def select_clips(script, segments, script_corresps):
             ):
                 i_script_word += 1
 
-            if VERBOSE:
-                print(ANSI_HIGHLIGHT, end="")
-                print(" ".join(script[i_first_script_word : i_script_word + 1]), end="")
-                print(ANSI_RESET + " ", end="")
+            # if VERBOSE:
+            #     print(ANSI_HIGHLIGHT, end="")
+            #     print(" ".join(script[i_first_script_word : i_script_word + 1]), end="")
+            #     print(ANSI_RESET + " ", end="")
         else:
             segment = segments[i_seg]
             clip_start_time = segment[i_first_part]["start"]
@@ -460,12 +504,15 @@ def select_clips(script, segments, script_corresps):
                 clip_end_time = segments[i_seg][i_last_part + 1]["start"]
             else:
                 clip_end_time = segments[i_seg][i_last_part]["end"]
+
             intervals.append((clip_start_time, clip_end_time))
-            if VERBOSE:
-                print(ansi_fib_color(i_seg), end="")
-                chunk = segment[i_first_part : i_last_part + 1]
-                print(" ".join([p["word"] for p in chunk]), end="")
-                print(ANSI_RESET + " ", end="")
+            composed_script += segment[i_first_part : i_last_part + 1]
+
+            # if VERBOSE:
+            #     print(f"{ansi_fib_color(i_seg)}({i_seg})", end=" ")
+            #     chunk = segment[i_first_part : i_last_part + 1]
+            #     print(" ".join([p["word"] for p in chunk]), end="")
+            #     print(ANSI_RESET + " ", end="")
 
         i_script_word += 1
         if i_script_word >= len(script):
@@ -473,7 +520,27 @@ def select_clips(script, segments, script_corresps):
 
     v_print("\n")
 
-    return intervals
+    return intervals, composed_script
+
+
+def export_audio_segments(recording_path, segments, output_dir):
+
+    with wave.open(recording_path, "rb") as in_wav:
+        params = in_wav.getparams()
+        frame_rate = in_wav.getframerate()
+        digits = len(str(len(segments)))
+        for i, segment in enumerate(segments):
+            start = segment[0]["start"]
+            end = segment[-1]["end"]
+            start_frame = int(start * frame_rate)
+            end_frame = int(end * frame_rate)
+            in_wav.setpos(start_frame)
+            wav_segment = in_wav.readframes(end_frame - start_frame)
+            title = "_".join([w["word"] for w in segment[0 : min(len(segment), 3)]])
+            out_path = os.path.join(output_dir, f"{i:0{digits}d}_{title}.wav")
+            with wave.open(out_path, "wb") as out_wav:
+                out_wav.setparams(params)
+                out_wav.writeframes(wav_segment)
 
 
 def stitch_audio(recording_path, intervals, output_path, crossfade):
@@ -544,15 +611,37 @@ def main():
             out_f.write(in_f.read())
         sys.exit(0)
 
-    segments = split_into_segments(transcript, cfg.cue)
+    segments = split_into_segments(
+        transcript, cfg.cue, cfg.segment_min_words, cfg.manually_excluded_segments
+    )
 
-    correspondences = find_correspondences(script, segments)
+    if cfg.wavdir is not None:
+        export_audio_segments(cfg.rec, segments, cfg.wavdir)
 
-    intervals = select_clips(script, segments, correspondences)
+    discarded_segments = cfg.manually_excluded_segments + [
+        i for i, s in enumerate(segments) if len(s) < cfg.segment_min_words
+    ]
+
+    correspondences = find_correspondences(script, segments, discarded_segments)
+    # with open("corr.json", "w") as f:
+    #     json.dump(correspondences, f)
+    # with open("corr.json", "r") as f:
+    #     correspondences = json.load(f)
+
+    intervals, composed_script = select_clips(script, segments, correspondences)
+
+    if VERBOSE:
+        print(
+            f"{ANSI_BOLD}final composition of selected clips (might take some time)\n"
+        )
+        first, last, seg_corresps, edits = levenshtein_word_sequences(
+            script, composed_script
+        )
+        show_difference(script, composed_script, edits, intro_outro=False)
 
     v_print(f"{ANSI_BOLD}audio segments:{ANSI_RESET}\n")
     for start, end in intervals:
-        v_print(f"{start:.3f} - {end:.3f} ({end - start:.3f} s)")
+        v_print(f"{start:.2f} - {end:.2f} ({end - start:.2f} s)")
 
     stitch_audio(cfg.rec, intervals, cfg.out, cfg.fade)
 
