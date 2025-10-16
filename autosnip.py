@@ -31,11 +31,13 @@ def v_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def cleanup(text):
+def cleanup(text, remove_spaces=False):
     # lowercase, remove punctuation, trim whitespace
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text)  # replace all non-letters with space
-    text = re.sub(r"\s+", " ", text)  # merge all whitespaces into a single space
+    text = re.sub(
+        r"\s+", "" if remove_spaces else " ", text
+    )  # remove or merge all whitespaces
     text = text.strip()
     return text
 
@@ -81,12 +83,15 @@ def setup():
     parser.add_argument("-f", "--fade", type=float, default=0.01, help="crossfade duration in seconds")
     parser.add_argument("-C", "--cache", default=tempfile.gettempdir(), help="cache folder for the down-sampled audio and the transcript")
     parser.add_argument("-W", "--wavs", help="folder to output wav snippets to make later manual corrections easier")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose output")
+    parser.add_argument("-q", "--quiet", action="store_true", help="no informative and very pretty output")
     args = parser.parse_args()
     # fmt: on
 
     global VERBOSE
-    VERBOSE = args.verbose
+    VERBOSE = not args.quiet
+
+    os.makedirs(args.cache, exist_ok=True)
+    os.makedirs(args.wavs, exist_ok=True)
 
     if (
         args.script == parser.get_default("script")
@@ -172,9 +177,6 @@ def transcribe_audio(model, wav_path):
         if "result" in r:
             words.extend(r["result"])
 
-    for w in words:
-        w["word"] = cleanup(w["word"])
-
     return words
 
 
@@ -189,7 +191,7 @@ def load_or_generate_transcript(cfg):
     model_name = os.path.basename(os.path.normpath(cfg.model_path))
 
     combined_hash = hashlib.md5(
-        (audio_checksum + model_name + script).encode("utf-8")
+        (audio_checksum + model_name).encode("utf-8")
     ).hexdigest()
     transcript_cache = os.path.join(cfg.cache, f"{combined_hash}.json")
 
@@ -225,6 +227,9 @@ def load_or_generate_transcript(cfg):
         with open(transcript_cache, "w") as f:
             json.dump(transcript, f)
             print(f"transcript cached to {transcript_cache}")
+
+    for w in transcript:
+        w["word"] = cleanup(w["word"], remove_spaces=True)
 
     return script.split(" "), transcript
 
@@ -632,7 +637,7 @@ def main():
 
     if VERBOSE:
         print(
-            f"{ANSI_BOLD}final composition of selected clips (might take some time)\n"
+            f"{ANSI_BOLD}final composition of selected clips (might take some time):\n"
         )
         first, last, seg_corresps, edits = levenshtein_word_sequences(
             script, composed_script

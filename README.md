@@ -17,7 +17,7 @@ Download and unpack a speech recognition model from https://alphacephei.com/vosk
 Carefully craft your script with depth and wit. Think of a cue word to signal a mistake to autosnip. The cue word should be a word that does not occur in your script. Record yourself reading the script. Whenever you make a mistake or want to rerecord some part for whatever reason, say the cue word and start over at some earlier point in the script, a good place is the start of the current sentence so there is no break in the flow mid sentence. When you are done, feed the script and your recording into autosnip:
 
 ```
-autosnip -s my_script.txt -r my_recording.wav -o my_clean_recording.wav -m vosk-model-en-us-0.22 -c oops -v
+autosnip -s my_script.txt -r my_recording.wav -o my_clean_recording.wav -m vosk-model-en-us-0.22 -c oops
 ```
 
 Congratulations! You may now publish your recording into the world.
